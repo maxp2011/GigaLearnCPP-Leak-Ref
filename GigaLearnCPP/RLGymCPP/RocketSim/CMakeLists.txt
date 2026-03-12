@@ -1,4 +1,4 @@
-﻿cmake_minimum_required (VERSION 3.8)
+cmake_minimum_required (VERSION 3.8)
 
 project("RocketSim")
 
@@ -12,3 +12,5 @@ add_library(RocketSim ${FILES_ROCKETSIM} ${FILES_BULLET})
 
 set_target_properties(RocketSim PROPERTIES LINKER_LANGUAGE CXX)
 set_target_properties(RocketSim PROPERTIES CXX_STANDARD 20)
+# Required when linking this static lib into a shared lib (e.g. libGigaLearnCPP.so) on Linux
+set_target_properties(RocketSim PROPERTIES POSITION_INDEPENDENT_CODE ON)
