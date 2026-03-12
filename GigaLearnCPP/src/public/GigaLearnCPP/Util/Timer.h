@@ -9,15 +9,15 @@ namespace GGL {
 			Reset();
 		}
 
-		// Returns elapsed time in seconds
+		// Returns elapsed time in seconds (use steady_clock throughout for Linux/GCC)
 		double Elapsed() {
-			auto endTime = std::chrono::high_resolution_clock::now();
+			auto endTime = std::chrono::steady_clock::now();
 			std::chrono::duration<double> elapsed = endTime - startTime;
 			return elapsed.count();
 		}
 
 		void Reset() {
-			startTime = std::chrono::high_resolution_clock::now();
+			startTime = std::chrono::steady_clock::now();
 		}
 	};
 }
