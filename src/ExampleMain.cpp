@@ -258,7 +258,7 @@ int main(int argc, char* argv[]) {
 	cfg.ppo.sharedHead.optimType = optim;
 
 	//auto activation = ModelActivationType::RELU;
-	auto activation = ModelActivationType::RELU;
+	auto activation = ModelActivationType::LEAKY_RELU;
 	cfg.ppo.policy.activationType = activation;
 	cfg.ppo.critic.activationType = activation;
 	cfg.ppo.sharedHead.activationType = activation;
