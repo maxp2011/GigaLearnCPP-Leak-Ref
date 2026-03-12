@@ -1,4 +1,4 @@
-﻿cmake_minimum_required (VERSION 3.8)
+cmake_minimum_required (VERSION 3.8)
 
 project("RLGymCPP")
 
@@ -10,6 +10,8 @@ target_include_directories(RLGymCPP PUBLIC "src/")
 # Set C++ version to 20
 set_target_properties(RLGymCPP PROPERTIES LINKER_LANGUAGE CXX)
 set_target_properties(RLGymCPP PROPERTIES CXX_STANDARD 20)
+# Required when linking this static lib into a shared lib (libGigaLearnCPP.so) on Linux
+set_target_properties(RLGymCPP PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 # Include RocketSim
 add_subdirectory("RocketSim")
