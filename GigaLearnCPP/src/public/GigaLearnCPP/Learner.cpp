@@ -24,6 +24,10 @@ GGL::Learner::Learner(EnvCreateFn envCreateFn, LearnerConfig config, StepCallbac
 	envCreateFn(envCreateFn), config(config), stepCallback(stepCallback)
 {
 	pybind11::initialize_interpreter();
+	// So MetricSender/RenderSender can import python_scripts when exe is run from build/Release
+	try {
+		pybind11::exec("import sys, os; sys.path.insert(0, os.getcwd())");
+	} catch (...) {}
 
 #ifndef NDEBUG
 	RG_LOG("===========================");
@@ -573,6 +577,12 @@ void GGL::Learner::Start() {
 					float envStepTime = 0;
 
 					for (int step = 0; combinedTraj.Length() < config.ppo.tsPerItr || render; step++, stepsCollected += numRealPlayers) {
+						// Progress logging so long first iteration doesn't look frozen
+						if (!render) {
+							if (step <= 5 || step % 10 == 0) {
+								RG_LOG("  Step " << step << " | " << combinedTraj.Length() << "/" << config.ppo.tsPerItr << " timesteps");
+							}
+						}
 						Timer stepTimer = {};
 						envSet->Reset();
 						envStepTime += stepTimer.Elapsed();
@@ -614,7 +624,8 @@ void GGL::Learner::Start() {
 							}
 						}
 
-						envSet->StepFirstHalf(true);
+						// Synchronous first half to avoid thread-pool block in Sync() later (fixes intermittent freezes).
+						envSet->StepFirstHalf(false);
 
 						Timer inferTimer = {};
 
@@ -647,7 +658,7 @@ void GGL::Learner::Start() {
 							newLogProbs = TENSOR_TO_VEC<float>(tLogProbs);	
 
 						stepTimer.Reset();
-						envSet->Sync(); // Make sure the first half is done
+						// No Sync() needed: StepFirstHalf(false) already waited for first half.
 						envSet->StepSecondHalf(curActions, false);
 						envStepTime += stepTimer.Elapsed();
 
@@ -727,11 +738,16 @@ void GGL::Learner::Start() {
 				}
 				float collectionTime = collectionTimer.Elapsed();
 
+				// === Single-threaded consumption (no pipelining) ===
 				Timer consumptionTimer = {};
-				{ // Process timesteps
+				torch::Tensor tReturnsSave, tAdvantagesSave, tTargetValsSave;
+				torch::Tensor tAvgRewardSave, tEpLenSave;
+				{
 					RG_NO_GRAD;
 
-					// Make and transpose tensors
+					auto dev = ppo->device;
+
+					// Make tensors
 					torch::Tensor tStates = torch::tensor(combinedTraj.states).reshape({ -1, obsSize });
 					torch::Tensor tActionMasks = torch::tensor(combinedTraj.actionMasks).reshape({ -1, numActions });
 					torch::Tensor tActions = torch::tensor(combinedTraj.actions);
@@ -739,48 +755,43 @@ void GGL::Learner::Start() {
 					torch::Tensor tRewards = torch::tensor(combinedTraj.rewards);
 					torch::Tensor tTerminals = torch::tensor(combinedTraj.terminals);
 
-					// States we truncated at (there could be none)
 					torch::Tensor tNextTruncStates;
 					if (!combinedTraj.nextStates.empty())
 						tNextTruncStates = torch::tensor(combinedTraj.nextStates).reshape({ -1, obsSize });
 
-					report["Average Step Reward"] = tRewards.mean().item<float>();
+					tAvgRewardSave = tRewards.mean();
 					report["Collected Timesteps"] = stepsCollected;
-					
+
+					// Value predictions
 					torch::Tensor tValPreds;
 					torch::Tensor tTruncValPreds;
-
-					if (ppo->device.is_cpu()) {
-						// Predict values all at once
-						tValPreds = ppo->InferCritic(tStates.to(ppo->device, true, true)).cpu();
+					if (dev.is_cpu()) {
+						tValPreds = ppo->InferCritic(tStates.to(dev, true, true));
 						if (tNextTruncStates.defined())
-							tTruncValPreds = ppo->InferCritic(tNextTruncStates.to(ppo->device, true, true)).cpu();
+							tTruncValPreds = ppo->InferCritic(tNextTruncStates.to(dev, true, true));
 					} else {
-						// Predict values using minibatching
-						tValPreds = torch::zeros({ (int64_t)combinedTraj.Length() });
-						for (int i = 0; i < combinedTraj.Length(); i += ppo->config.miniBatchSize) {
-							int start = i;
-							int end = RS_MIN(i + ppo->config.miniBatchSize, combinedTraj.Length());
-							torch::Tensor tStatesPart = tStates.slice(0, start, end);
-
-							auto valPredsPart = ppo->InferCritic(tStatesPart.to(ppo->device, true, true)).cpu();
+						int64_t valPredChunk = (int64_t)RS_MIN(4 * ppo->config.miniBatchSize, (int)combinedTraj.Length());
+						if (valPredChunk <= 0) valPredChunk = (int64_t)combinedTraj.Length();
+						tValPreds = torch::zeros({ (int64_t)combinedTraj.Length() }, dev);
+						for (int64_t i = 0; i < (int64_t)combinedTraj.Length(); i += valPredChunk) {
+							int64_t start = i;
+							int64_t end = RS_MIN(i + valPredChunk, (int64_t)combinedTraj.Length());
+							auto tStatesPart = tStates.slice(0, start, end).to(dev, true, true);
+							auto valPredsPart = ppo->InferCritic(tStatesPart);
 							RG_ASSERT(valPredsPart.size(0) == (end - start));
 							tValPreds.slice(0, start, end).copy_(valPredsPart, true);
 						}
-
+						tValPreds = tValPreds.cpu();
 						if (tNextTruncStates.defined()) {
-							// This really just should never happen
-							// If this is ever actually a real problem in a legitimate use case, ping Zealan in the dead of night
-							RG_ASSERT(tNextTruncStates.size(0) <= ppo->config.miniBatchSize);
-
-							tTruncValPreds = ppo->InferCritic(tNextTruncStates.to(ppo->device, true, true)).cpu();
+							RG_ASSERT(tNextTruncStates.size(0) <= valPredChunk);
+							tTruncValPreds = ppo->InferCritic(tNextTruncStates.to(dev, true, true)).cpu();
 						}
 					}
 
-					report["Episode Length"] = 1.f / (tTerminals == 1).to(torch::kFloat32).mean().item<float>();
+					tEpLenSave = (tTerminals == 1).to(torch::kFloat32).mean();
 
+					// GAE
 					Timer gaeTimer = {};
-					// Run GAE
 					torch::Tensor tAdvantages, tTargetVals, tReturns;
 					float rewClipPortion;
 					GAE::Compute(
@@ -791,29 +802,20 @@ void GGL::Learner::Start() {
 					report["GAE Time"] = gaeTimer.Elapsed();
 					report["Clipped Reward Portion"] = rewClipPortion;
 
-					if (returnStat) {
-						report["GAE/Returns STD"] = returnStat->GetSTD();
+					// Save for reporting after Learn
+					tReturnsSave = tReturns;
+					tAdvantagesSave = tAdvantages;
+					tTargetValsSave = tTargetVals;
 
-						int numToIncrement = RS_MIN(config.maxReturnSamples, tReturns.size(0));
-						if (numToIncrement > 0) {
-							auto selectedReturns = tReturns.index_select(0, torch::randint(tReturns.size(0), { (int64_t)numToIncrement }));
-							returnStat->Increment(TENSOR_TO_VEC<float>(selectedReturns));
-						}
-					}
-					report["GAE/Avg Return"] = tReturns.abs().mean().item<float>();
-					report["GAE/Avg Advantage"] = tAdvantages.abs().mean().item<float>();
-					report["GAE/Avg Val Target"] = tTargetVals.abs().mean().item<float>();
-
-					// Set experience buffer
-					experience.data.actions = tActions;
-					experience.data.logProbs = tLogProbs;
-					experience.data.actionMasks = tActionMasks;
-					experience.data.states = tStates;
-					experience.data.advantages = tAdvantages;
-					experience.data.targetValues = tTargetVals;
+					// Experience on device
+					experience.data.actions = tActions.to(dev);
+					experience.data.logProbs = tLogProbs.to(dev);
+					experience.data.actionMasks = tActionMasks.to(dev);
+					experience.data.states = tStates.to(dev);
+					experience.data.advantages = tAdvantages.to(dev);
+					experience.data.targetValues = tTargetVals.to(dev);
 				}
 
-				// Free CUDA cache
 #ifdef RG_CUDA_SUPPORT
 				if (ppo->device.is_cuda())
 					c10::cuda::CUDACachingAllocator::emptyCache();
@@ -824,7 +826,22 @@ void GGL::Learner::Start() {
 				ppo->Learn(experience, report, isFirstIteration);
 				report["PPO Learn Time"] = learnTimer.Elapsed();
 
-				// Set metrics
+				// Report GAE stats after Learn
+				if (returnStat) {
+					report["GAE/Returns STD"] = returnStat->GetSTD();
+					int numToIncrement = RS_MIN(config.maxReturnSamples, (int)tReturnsSave.size(0));
+					if (numToIncrement > 0) {
+						auto selectedReturns = tReturnsSave.index_select(0, torch::randint((int)tReturnsSave.size(0), { (int64_t)numToIncrement }));
+						returnStat->Increment(TENSOR_TO_VEC<float>(selectedReturns));
+					}
+				}
+				report["GAE/Avg Return"] = tReturnsSave.abs().mean().item<float>();
+				report["GAE/Avg Advantage"] = tAdvantagesSave.abs().mean().item<float>();
+				report["GAE/Avg Val Target"] = tTargetValsSave.abs().mean().item<float>();
+				report["Average Step Reward"] = tAvgRewardSave.item<float>();
+				report["Episode Length"] = 1.f / (tEpLenSave.item<float>() + 1e-8f);
+
+				// Timings & counts
 				float consumptionTime = consumptionTimer.Elapsed();
 				report["Collection Time"] = collectionTime;
 				report["Consumption Time"] = consumptionTime;
@@ -848,10 +865,8 @@ void GGL::Learner::Start() {
 				}
 
 				if (!config.checkpointFolder.empty()) {
-					if (totalTimesteps / config.tsPerSave > prevTimesteps / config.tsPerSave) {
-						// Auto-save
+					if (totalTimesteps / config.tsPerSave > prevTimesteps / config.tsPerSave)
 						Save();
-					}
 				}
 
 				report.Finish();
@@ -879,7 +894,7 @@ void GGL::Learner::Start() {
 						"-Env Step Time",
 						"Consumption Time",
 						"-GAE Time",
-						"-PPO Learn Time"
+						"-PPO Learn Time",
 						"",
 						"Collected Timesteps",
 						"Total Timesteps",

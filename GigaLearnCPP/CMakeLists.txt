@@ -71,9 +71,17 @@ if (MSVC)
                  $<TARGET_FILE_DIR:GigaLearnCPP>)
 endif (MSVC)
 
-# Make our python files copy over to our build dir
+# Make our python files copy over to our build dir (and into output so exe finds python_scripts)
 configure_file("./python_scripts/metric_receiver.py" "../python_scripts/metric_receiver.py" COPY)
 configure_file("./python_scripts/render_receiver.py" "../python_scripts/render_receiver.py" COPY)
+if (MSVC)
+	add_custom_command(TARGET GigaLearnCPP POST_BUILD
+		COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:GigaLearnCPP>/python_scripts"
+		COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_CURRENT_SOURCE_DIR}/python_scripts/metric_receiver.py" "$<TARGET_FILE_DIR:GigaLearnCPP>/python_scripts/"
+		COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_CURRENT_SOURCE_DIR}/python_scripts/render_receiver.py" "$<TARGET_FILE_DIR:GigaLearnCPP>/python_scripts/"
+		COMMENT "Copy python_scripts to output dir for MetricSender/RenderSender"
+	)
+endif()
 
 # MSVC sometimes won't link to the libtorch DLLs unless you do this
 # This is also from https://pytorch.org/cppdocs/installing.html#minimal-example
@@ -85,4 +93,21 @@ if (MSVC)
                  COMMAND ${CMAKE_COMMAND} -E copy_if_different
                  ${TORCH_DLLS}
                  $<TARGET_FILE_DIR:GigaLearnCPP>)
+	# LibTorch/Kineto needs CUPTI (cupti64_2025.4.1.dll) at runtime; copy from CUDA Toolkit extras
+	set(_cupti_dir "")
+	if(DEFINED CUDAToolkit_ROOT AND EXISTS "${CUDAToolkit_ROOT}/extras/CUPTI/lib64")
+		set(_cupti_dir "${CUDAToolkit_ROOT}/extras/CUPTI/lib64")
+	elseif(DEFINED CUDA_TOOLKIT_ROOT_DIR AND EXISTS "${CUDA_TOOLKIT_ROOT_DIR}/extras/CUPTI/lib64")
+		set(_cupti_dir "${CUDA_TOOLKIT_ROOT_DIR}/extras/CUPTI/lib64")
+	elseif(DEFINED ENV{CUDA_PATH} AND EXISTS "$ENV{CUDA_PATH}/extras/CUPTI/lib64")
+		set(_cupti_dir "$ENV{CUDA_PATH}/extras/CUPTI/lib64")
+	endif()
+	if(_cupti_dir)
+		file(GLOB _cupti_dlls "${_cupti_dir}/cupti64_*.dll")
+		if(_cupti_dlls)
+			add_custom_command(TARGET GigaLearnCPP POST_BUILD
+				COMMAND ${CMAKE_COMMAND} -E copy_if_different ${_cupti_dlls} $<TARGET_FILE_DIR:GigaLearnCPP>)
+			message(STATUS "CUPTI DLLs will be copied from: ${_cupti_dir}")
+		endif()
+	endif()
 endif (MSVC)
