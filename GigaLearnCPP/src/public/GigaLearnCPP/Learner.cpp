@@ -6,6 +6,13 @@
 #include <torch/cuda.h>
 #include <nlohmann/json.hpp>
 #include <pybind11/embed.h>
+#include <filesystem>
+#if defined(_WIN32) || defined(_WIN64)
+#include <windows.h>
+#else
+#include <unistd.h>
+#include <limits.h>
+#endif
 
 #ifdef RG_CUDA_SUPPORT
 #include <c10/cuda/CUDACachingAllocator.h>
@@ -24,9 +31,31 @@ GGL::Learner::Learner(EnvCreateFn envCreateFn, LearnerConfig config, StepCallbac
 	envCreateFn(envCreateFn), config(config), stepCallback(stepCallback)
 {
 	pybind11::initialize_interpreter();
-	// So MetricSender/RenderSender can import python_scripts when exe is run from build/Release
+	// Add cwd and executable directory to path so python_scripts is found (run from repo root or build/)
 	try {
+		std::string exeDir;
+#if defined(_WIN32) || defined(_WIN64)
+		wchar_t buf[4096];
+		if (GetModuleFileNameW(NULL, buf, 4096)) {
+			std::filesystem::path p(buf);
+			exeDir = p.parent_path().string();
+		}
+#else
+		char buf[PATH_MAX];
+		ssize_t n = readlink("/proc/self/exe", buf, sizeof(buf) - 1);
+		if (n > 0) {
+			buf[n] = '\0';
+			exeDir = std::filesystem::path(buf).parent_path().string();
+		}
+#endif
 		pybind11::exec("import sys, os; sys.path.insert(0, os.getcwd())");
+		if (!exeDir.empty()) {
+			// Escape backslashes for Python string
+			std::string escaped = exeDir;
+			for (size_t i = 0; i < escaped.size(); i++)
+				if (escaped[i] == '\\') escaped.insert(i++, 1, '\\');
+			pybind11::exec("import sys; sys.path.insert(0, r'" + escaped + "')");
+		}
 	} catch (...) {}
 
 #ifndef NDEBUG
@@ -193,8 +222,12 @@ void GGL::Learner::LoadStats(std::filesystem::path path) {
 	constexpr const char* ERROR_PREFIX = "Learner::LoadStats(): ";
 
 	std::ifstream fIn(path);
-	if (!fIn.good())
-		RG_ERR_CLOSE(ERROR_PREFIX << "Can't open file at " << path);
+	if (!fIn.good()) {
+		// Older / external checkpoints may not have RUNNING_STATS.json.
+		// In that case just start stats fresh instead of failing the run.
+		RG_LOG(ERROR_PREFIX << "Stats file not found at " << path << ", starting with fresh stats.");
+		return;
+	}
 
 	json j = json::parse(fIn);
 	totalTimesteps = j["total_timesteps"];
