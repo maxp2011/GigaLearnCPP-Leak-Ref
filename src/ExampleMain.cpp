@@ -16,6 +16,24 @@
 #include <iostream>
 #include <string>
 #include <RLGymCPP/StateSetters/KickoffState.h>
+
+namespace fs = std::filesystem;
+
+// Find collision_meshes folder: try cwd, then parent dirs. Prefer absolute path so it works from build/.
+static std::string FindCollisionMeshesPath() {
+	const char* candidates[] = { "collision_meshes", "../collision_meshes", "../../collision_meshes" };
+	for (const char* sub : candidates) {
+		fs::path p = fs::current_path() / sub;
+		fs::path soccar = p / "soccar";
+		if (fs::exists(p) && fs::is_directory(p) && fs::exists(soccar) && fs::is_directory(soccar)) {
+			try {
+				return fs::absolute(p).string();
+			} catch (...) {}
+			return p.string();
+		}
+	}
+	return "collision_meshes"; // fallback (Learner will init; may fail if missing)
+}
 #include <RLGymCPP/StateSetters/RandomState.h>
 #include <RLGymCPP/ActionParsers/DefaultAction.h>
 
@@ -167,8 +185,9 @@ void StepCallback(Learner* learner, const std::vector<GameState>& states, Report
 }
 
 int main(int argc, char* argv[]) {
-	// Initialize RocketSim with collision meshes (relative to cwd; same path works on Windows and Linux)
-	RocketSim::Init("collision_meshes");
+	// Initialize RocketSim with collision meshes (auto-find: cwd, ../, ../../ so server and PC both work)
+	std::string meshPath = FindCollisionMeshesPath();
+	RocketSim::Init(meshPath);
 
 	// Make configuration for the learner
 	LearnerConfig cfg = {};
@@ -260,7 +279,9 @@ int main(int argc, char* argv[]) {
 	if (numGamesOverride > 0)
 		cfg.numGames = numGamesOverride;
 
-	cfg.sendMetrics = ParseBoolArg(argc, argv, "--send-metrics", true);
+	// Disable metrics by default on server (avoids python_scripts / wandb issues).
+	// You can re-enable with --send-metrics true if python_scripts is set up.
+	cfg.sendMetrics = ParseBoolArg(argc, argv, "--send-metrics", false);
 	cfg.renderMode = ParseBoolArg(argc, argv, "--render", false);
 	cfg.renderTimeScale = ParseFloatArg(argc, argv, "--render-timescale", 8.0f);
 
@@ -268,10 +289,10 @@ int main(int argc, char* argv[]) {
 	if (tlPath.empty())
 		tlPath = ParseStrArg(argc, argv, "--transfer-learn", "");
 	if (tlPath.empty()) {
-		// Check if --tl/--transfer-learn flag present without path → use default
+		// Check if --tl/--transfer-learn flag present without path → use default (works from repo root or build/Release)
 		for (int i = 1; i < argc; i++) {
 			if (strcmp(argv[i], "--tl") == 0 || strcmp(argv[i], "--transfer-learn") == 0) {
-				tlPath = R"(C:\GigaLearn\build\Release\63711562314)";
+				tlPath = "checkpoints/685272918";
 				break;
 			}
 		}
@@ -330,15 +351,13 @@ int main(int argc, char* argv[]) {
 			const bool noKernelImage = (msg.find("no kernel image") != std::string::npos) ||
 				(msg.find("cudaErrorNoKernelImageForDevice") != std::string::npos);
 			if (cfg.deviceType == LearnerDeviceType::GPU_CUDA && noKernelImage) {
-				std::cout << "GPU not supported by this LibTorch build (no kernel image). Falling back to CPU..." << std::endl;
-				std::cout << "  For RTX 50 / Blackwell GPU: build LibTorch from source. See BUILD_LIBTORCH_FROM_SOURCE.md" << std::endl;
+				std::cerr << "GPU not supported by this LibTorch build (no kernel image for this device)." << std::endl;
+				std::cerr << "  Run with --cpu to use CPU:  ./build/GigaLearnBot --cpu" << std::endl;
+				std::cerr << "  For RTX 50 / Blackwell: build LibTorch from source with the correct TORCH_CUDA_ARCH_LIST." << std::endl;
 				delete learner;
-				cfg.deviceType = LearnerDeviceType::CPU;
-				learner = new Learner(EnvCreateFunc, cfg, StepCallback);
-				learner->Start();
-			} else {
-				throw;
+				return EXIT_FAILURE;
 			}
+			throw;
 		}
 	}
 

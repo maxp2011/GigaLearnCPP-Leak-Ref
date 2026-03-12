@@ -72,8 +72,9 @@ if (MSVC)
 endif (MSVC)
 
 # Make our python files copy over to our build dir (and into output so exe finds python_scripts)
-configure_file("./python_scripts/metric_receiver.py" "../python_scripts/metric_receiver.py" COPY)
-configure_file("./python_scripts/render_receiver.py" "../python_scripts/render_receiver.py" COPY)
+# On non-MSVC, just copy the whole folder next to the binary (build/python_scripts).
+file(COPY "${CMAKE_CURRENT_SOURCE_DIR}/python_scripts"
+     DESTINATION "${CMAKE_BINARY_DIR}")
 if (MSVC)
 	add_custom_command(TARGET GigaLearnCPP POST_BUILD
 		COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:GigaLearnCPP>/python_scripts"
