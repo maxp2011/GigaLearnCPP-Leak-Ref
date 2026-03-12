@@ -87,7 +87,12 @@ torch::Tensor GGL::PPOLearner::InferPolicyProbsFromModels(
 	auto logits = models["policy"]->Forward(obs, halfPrec) / temperature;
 
 	auto result = torch::softmax(logits + ACTION_DISABLED_LOGIT * actionMasks.logical_not(), -1);
-	return result.view({ -1, models["policy"]->config.numOutputs }).clamp(ACTION_MIN_PROB, 1);
+	result = result.view({ -1, models["policy"]->config.numOutputs }).clamp(ACTION_MIN_PROB, 1);
+	// Sanitize so multinomial never sees nan/inf/<0 (avoids CUDA device-side assert and training stop)
+	result = torch::where(result.isfinite(), result, torch::full_like(result, ACTION_MIN_PROB));
+	auto rowSum = result.sum(-1, true).clamp_min(1e-10f);
+	result = result / rowSum;
+	return result;
 }
 
 void GGL::PPOLearner::InferActionsFromModels(
@@ -97,6 +102,12 @@ void GGL::PPOLearner::InferActionsFromModels(
 	torch::Tensor* outActions, torch::Tensor* outLogProbs) {
 
 	auto probs = InferPolicyProbsFromModels(models, obs, actionMasks, temperature, halfPrec);
+
+	// Defensive: ensure valid probs before multinomial (avoids device assert if upstream produced nan)
+	constexpr float EPS = 1e-8f;
+	probs = probs.clamp_min(EPS);
+	probs = torch::where(probs.isfinite(), probs, torch::full_like(probs, 1.0f / probs.size(-1)));
+	probs = probs / probs.sum(-1, true).clamp_min(1e-10f);
 
 	if (deterministic) {
 		auto action = probs.argmax(1);
