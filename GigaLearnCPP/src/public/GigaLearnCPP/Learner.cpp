@@ -545,7 +545,6 @@ void GGL::Learner::Start() {
 		int maxEpisodeLength = (int)(config.ppo.maxEpisodeDuration * (120.f / config.tickSkip));
 
 		while (true) {
-			try {
 			Report report = {};
 
 			bool isFirstIteration = (totalTimesteps == 0);
@@ -935,15 +934,6 @@ void GGL::Learner::Start() {
 						"Total Iterations"
 					}
 				);
-			}
-		}
-			} catch (const std::exception& e) {
-				std::string msg = e.what();
-				if (msg.find("probability tensor") != std::string::npos || msg.find("device-side assert") != std::string::npos) {
-					RG_LOG("Warning: invalid policy output or device assert - skipping iteration and continuing.");
-					continue;
-				}
-				throw;
 			}
 		}
 		
