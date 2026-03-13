@@ -114,8 +114,13 @@ void GGL::PPOLearner::InferActionsFromModels(
 		if (outActions)
 			*outActions = action.flatten();
 	} else {
-		auto action = torch::multinomial(probs, 1, true);
-		auto logProb = torch::log(probs).gather(-1, action);
+		// Sample actions on CPU to avoid CUDA device-side asserts from multinomial
+		auto probs_cpu = probs.to(torch::kCPU);
+		auto action_cpu = torch::multinomial(probs_cpu, 1, true);
+		auto logProb_cpu = torch::log(probs_cpu).gather(-1, action_cpu);
+
+		auto action = action_cpu.to(probs.device());
+		auto logProb = logProb_cpu.to(probs.device());
 		if (outActions)
 			*outActions = action.flatten();
 
