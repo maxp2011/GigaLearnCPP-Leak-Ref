@@ -76,36 +76,43 @@ static std::string ParseStrArg(int argc, char* argv[], const char* flag, const c
 EnvCreateResult EnvCreateFunc(int index) {
 	std::vector<WeightedReward> rewards = {
 		// --- Ball mechanics ---
-		{ new ZeroSumReward(new StrongTouchReward(20, 90), 0.f, 0.7f), 5.0f },
-		{ new ZeroSumReward(new RLGC::VelocityBallToGoalMouthReward(), 1.f, 0.7f), 25.f },
-		{ new ZeroSumReward(new RLGC::VelocityPlayerToBallReward(), 1.f, 0.7f), 3.5f },
+	//	{ new ZeroSumReward(new StrongTouchReward(20, 90), 0.f, 0.7f), 5.0f },
+	//	{ new ZeroSumReward(new RLGC::VelocityBallToGoalMouthReward(), 1.f, 0.7f), 25.f },
+	//	{ new ZeroSumReward(new RLGC::VelocityPlayerToBallReward(), 1.f, 0.7f), 3.5f },
 
 		// --- Kickoff ---
-		{ new ZeroSumReward(new RLGC::ShieldzKORew(), 1.0f, 1.0f), 5.0f },
+		//{ new ZeroSumReward(new RLGC::ShieldzKORew(), 1.0f, 1.0f), 5.0f },
 
 		// --- Aerial / flip reset ---
-		{ new ZeroSumReward(new RLGC::FlyToGoalKeepHigh(), 1.0f, 1.0f), 0.5f },
-		{ new ZeroSumReward(new RLGC::RipplesFlipResetFreestyleChain(), 1.f, 0.1f), 6.25f },
-		{ new RLGC::SimpleFlipResetLearnReward(150.0f), 1.0f },
-		{ new RLGC::PopResetReward(300.0f), 1.0f },
+	//	{ new ZeroSumReward(new RLGC::FlyToGoalKeepHigh(), 1.0f, 1.0f), 0.5f },
+		//{ new ZeroSumReward(new RLGC::RipplesFlipResetFreestyleChain(), 1.f, 0.1f), 6.25f },
+		//{ new RLGC::SimpleFlipResetLearnReward(150.0f), 1.0f },
+		//{ new RLGC::PopResetReward(300.0f), 1.0f },
 
 		// --- Boost ---
-		{ new ZeroSumReward(new RLGC::PickupBoostReward(), 0.f, 1.0f), 35.5f },
-		{ new RLGC::SaveBoostReward(), 1.28f },
+		//{ new ZeroSumReward(new RLGC::PickupBoostReward(), 0.f, 1.0f), 35.5f },
+	//	{ new RLGC::SaveBoostReward(), 1.28f },
 
 		// --- Team play ---
-		{ new RLGC::TeamSpacingReward_MKH(1000.0f, 1.0f), 10.0f },
+	//	{ new RLGC::TeamSpacingReward_MKH(1000.0f, 1.0f), 10.0f },
 
 		// --- Demos / bumps (goal-front extracted from ConsolidatedDemoReward) ---
-		{ new ZeroSumReward(new RLGC::RippleDemoReward(), 0.6f, 0.0f), 1300.5f },
-		{ new ZeroSumReward(new RLGC::GoalFrontBumpDemoReward(1500.f), 1.0f, 0.0f), 1.0f },
-		{ new RLGC::DemoBumpNearBallReward(), 50.f },
+		//{ new ZeroSumReward(new RLGC::RippleDemoReward(), 0.6f, 0.0f), 1300.5f },
+		//{ new ZeroSumReward(new RLGC::GoalFrontBumpDemoReward(1500.f), 1.0f, 0.0f), 1.0f },
+		//{ new RLGC::DemoBumpNearBallReward(), 50.f },
 
 		// --- Scoring ---
-		{ new RLGC::GoalReward(-1.f), 650.f },
+	//	{ new RLGC::GoalReward(-1.f), 650.f },
 
 		// --- Misc ---
-		{ new RLGC::EnergyReward(), 0.00055f },
+	//	{ new RLGC::EnergyReward(), 0.00055f },
+
+
+	{ new RLGC::FaceBallReward(), 0.1f },
+	{ new RLGC::AirReward(), 0.12f },
+	{ new RLGC::TouchBallReward(), 5.f },
+	{ new RLGC::VelocityPlayerToBallReward(), 5.f },
+
 	};
 
 	std::vector<TerminalCondition*> terminalConditions = {
@@ -232,8 +239,8 @@ int main(int argc, char* argv[]) {
 		cfg.ppo.maskEntropy = true;   // normalize by valid action count = actual natural entropy, matches base GGL ~0.6
 	}
 	cfg.ppo.policyTemperature = 0.9f;  // slightly peakier softmax → lower natural entropy (~0.6)
-	cfg.ppo.gaeGamma = 0.991f;
-	cfg.ppo.gaeLambda = 0.95f;
+	cfg.ppo.gaeGamma = 0.998f;
+	cfg.ppo.gaeLambda = 0.958f;
 
 	cfg.ppo.policyLR = 1e-4f;
 	cfg.ppo.criticLR = 1e-4f;
@@ -300,11 +307,11 @@ int main(int argc, char* argv[]) {
 	Learner* learner = new Learner(EnvCreateFunc, cfg, StepCallback);
 
 	if (!tlPath.empty()) {
-		// Transfer learn: distill from big-layer teacher to current small model
+		// Transfer learn: teacher = checkpoint trained with CustomObs, student = current CustomObs + leaky_relu
 		TransferLearnConfig tlConfig = {};
-		tlConfig.makeOldObsFn = []() { return new AdvancedObsPadded(); };
+		tlConfig.makeOldObsFn = []() { return new CustomObs(); };
 		tlConfig.makeOldActFn = []() { return new DefaultAction(); };
-		// Old model (teacher): must match checkpoint arch (4x1024 + 512)
+		// Old model (teacher): same arch as saved checkpoint (4x1024 + 512)
 		const std::vector<int> oldLayers = { 1024, 1024, 1024, 1024, 512 };
 		tlConfig.oldSharedHeadConfig.layerSizes = oldLayers;
 		tlConfig.oldSharedHeadConfig.activationType = ModelActivationType::RELU;
