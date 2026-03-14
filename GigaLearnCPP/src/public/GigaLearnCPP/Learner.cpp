@@ -640,13 +640,15 @@ void GGL::Learner::Start() {
 							std::vector<double> mean = obsStat->GetMean();
 							std::vector<double> std = obsStat->GetSTD();
 							for (double& f : mean)
-								f = RS_CLAMP(f, -config.maxObsMeanRange, config.maxObsMeanRange);
+								f = std::isfinite(f) ? RS_CLAMP(f, -config.maxObsMeanRange, config.maxObsMeanRange) : 0.;
 							for (double& f : std)
-								f = RS_MAX(f, config.minObsSTD);
+								f = (std::isfinite(f) && f > 0) ? RS_MAX(f, config.minObsSTD) : config.minObsSTD;
 							for (int i = 0; i < envSet->state.numPlayers; i++) {
 								for (int j = 0; j < obsSize; j++) {
 									float& obsVal = envSet->state.obs.At(i, j);
-									obsVal = (obsVal - mean[j]) / std[j];
+									obsVal = (obsVal - (float)mean[j]) / (float)std[j];
+									if (!std::isfinite(obsVal))
+										obsVal = 0.f;
 								}
 							}
 						}
@@ -843,18 +845,22 @@ void GGL::Learner::Start() {
 					report["GAE Time"] = gaeTimer.Elapsed();
 					report["Clipped Reward Portion"] = rewClipPortion;
 
+					// Sanitize so Learn never sees NaN in advantages/targets
+					torch::Tensor tAdvFinite = torch::where(tAdvantages.isfinite(), tAdvantages, torch::zeros_like(tAdvantages));
+					torch::Tensor tTargetFinite = torch::where(tTargetVals.isfinite(), tTargetVals, torch::zeros_like(tTargetVals));
+
 					// Save for reporting after Learn
 					tReturnsSave = tReturns;
 					tAdvantagesSave = tAdvantages;
 					tTargetValsSave = tTargetVals;
 
-					// Experience on device
+					// Experience on device (use sanitized tensors)
 					experience.data.actions = tActions.to(dev);
 					experience.data.logProbs = tLogProbs.to(dev);
 					experience.data.actionMasks = tActionMasks.to(dev);
 					experience.data.states = tStates.to(dev);
-					experience.data.advantages = tAdvantages.to(dev);
-					experience.data.targetValues = tTargetVals.to(dev);
+					experience.data.advantages = tAdvFinite.to(dev);
+					experience.data.targetValues = tTargetFinite.to(dev);
 				}
 
 #ifdef RG_CUDA_SUPPORT
@@ -869,18 +875,20 @@ void GGL::Learner::Start() {
 
 				// Report GAE stats after Learn
 				if (returnStat) {
-					report["GAE/Returns STD"] = returnStat->GetSTD();
+					double retStd = returnStat->GetSTD();
+					report["GAE/Returns STD"] = std::isfinite(retStd) ? retStd : 1.;
 					int numToIncrement = RS_MIN(config.maxReturnSamples, (int)tReturnsSave.size(0));
 					if (numToIncrement > 0) {
 						auto selectedReturns = tReturnsSave.index_select(0, torch::randint((int)tReturnsSave.size(0), { (int64_t)numToIncrement }));
 						returnStat->Increment(TENSOR_TO_VEC<float>(selectedReturns));
 					}
 				}
-				report["GAE/Avg Return"] = tReturnsSave.abs().mean().item<float>();
-				report["GAE/Avg Advantage"] = tAdvantagesSave.abs().mean().item<float>();
-				report["GAE/Avg Val Target"] = tTargetValsSave.abs().mean().item<float>();
-				report["Average Step Reward"] = tAvgRewardSave.item<float>();
-				report["Episode Length"] = 1.f / (tEpLenSave.item<float>() + 1e-8f);
+				auto safeFloat = [](float v) { return std::isfinite(v) ? v : 0.f; };
+				report["GAE/Avg Return"] = safeFloat(tReturnsSave.abs().mean().item<float>());
+				report["GAE/Avg Advantage"] = safeFloat(tAdvantagesSave.abs().mean().item<float>());
+				report["GAE/Avg Val Target"] = safeFloat(tTargetValsSave.abs().mean().item<float>());
+				report["Average Step Reward"] = safeFloat(tAvgRewardSave.item<float>());
+				report["Episode Length"] = 1.f / (safeFloat(tEpLenSave.item<float>()) + 1e-8f);
 
 				// Timings & counts
 				float consumptionTime = consumptionTimer.Elapsed();

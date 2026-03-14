@@ -2,6 +2,7 @@
 #include "../FrameworkTorch.h"
 #include <GigaLearnCPP/Util/Utils.h>
 #include <nlohmann/json.hpp>
+#include <cmath>
 
 namespace GGL {
 	struct WelfordStat {
@@ -13,6 +14,8 @@ namespace GGL {
 
 		void Increment(const FList& samples) {
 			for (float sample : samples) {
+				if (!std::isfinite(sample))
+					continue;
 				double delta = (double)sample - runningMean;
 				double deltaN = delta / (count + 1);
 
@@ -29,18 +32,17 @@ namespace GGL {
 		double GetMean() const {
 			if (count < 2)
 				return 0;
-
-			return runningMean;
+			return std::isfinite(runningMean) ? runningMean : 0.;
 		}
 
 		double GetSTD() const {
 			if (count < 2)
 				return 1;
-
 			double curVar = runningVariance / (count - 1);
-			if (curVar == 0)
+			if (!std::isfinite(curVar) || curVar <= 0)
 				curVar = 1;
-			return sqrt(curVar);
+			double s = sqrt(curVar);
+			return std::isfinite(s) ? s : 1.;
 		}
 
 		nlohmann::json ToJSON() const {
@@ -71,7 +73,10 @@ namespace GGL {
 
 		void IncrementRow(float* samples) {
 			for (int i = 0; i < width; i++) {
-				double delta = samples[i] - runningMeans[i];
+				float s = samples[i];
+				if (!std::isfinite(s))
+					s = 0.f;
+				double delta = (double)s - runningMeans[i];
 				double deltaN = delta / (count + 1);
 				runningMeans[i] += deltaN;
 				runningVariances[i] += delta * deltaN * count;
@@ -94,12 +99,14 @@ namespace GGL {
 			std::vector<double> result = runningVariances;
 			for (double& d : result) {
 				d /= (count - 1);
-				if (d == 0)
+				if (!std::isfinite(d) || d <= 0)
 					d = 1;
-
-				d = sqrt(d);
+				else {
+					d = sqrt(d);
+					if (!std::isfinite(d))
+						d = 1;
+				}
 			}
-			
 			return result;
 		}
 

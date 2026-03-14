@@ -212,10 +212,15 @@ void GGL::PPOLearner::Learn(ExperienceBuffer& experience, Report& report, bool i
 				auto oldProbs = batchOldProbs.slice(0, start, stop).to(device, true, true);
 				auto targetValues = batchTargetValues.slice(0, start, stop).to(device, true, true);
 				auto advantages = batchAdvantages.slice(0, start, stop).to(device, true, true);
+				// Defense: avoid NaN in loss from bad experience
+				oldProbs = torch::where(oldProbs.isfinite(), oldProbs, torch::zeros_like(oldProbs));
+				advantages = torch::where(advantages.isfinite(), advantages, torch::zeros_like(advantages));
+				targetValues = torch::where(targetValues.isfinite(), targetValues, torch::zeros_like(targetValues));
 
 				// Single shared_head forward per minibatch (policy + critic reuse) for faster consumption
 				torch::Tensor features = models["shared_head"] ? models["shared_head"]->Forward(obs, false) : obs;
 				auto vals = models["critic"]->Forward(features, false).flatten().view_as(targetValues);
+				vals = torch::where(vals.isfinite(), vals, torch::zeros_like(vals));
 
 				torch::Tensor probs, logProbs, entropy, ratio, clipped, policyLoss, ppoLoss;
 				if (trainPolicy) {
@@ -406,8 +411,12 @@ void GGL::PPOLearner::TransferLearn(
 
 	auto policyBefore = models["policy"]->CopyParams();
 	
+	constexpr float TL_MIN_PROB = 1e-10f;
+	oldProbs = torch::where(oldProbs.isfinite(), oldProbs, torch::full_like(oldProbs, TL_MIN_PROB)).clamp_min(TL_MIN_PROB);
+
 	for (int i = 0; i < tlConfig.epochs; i++) {
 		torch::Tensor newProbs = InferPolicyProbsFromModels(models, newObs, newActionMasks, config.policyTemperature, false);
+		newProbs = torch::where(newProbs.isfinite(), newProbs, torch::full_like(newProbs, TL_MIN_PROB)).clamp_min(TL_MIN_PROB);
 
 		// Non-summative KL div	loss
 		torch::Tensor transferLearnLoss;
