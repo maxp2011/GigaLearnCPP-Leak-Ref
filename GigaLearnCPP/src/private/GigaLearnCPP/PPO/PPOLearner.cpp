@@ -1,5 +1,6 @@
 #include "PPOLearner.h"
 
+#include <cmath>
 #include <torch/nn/utils/convert_parameters.h>
 #include <torch/nn/utils/clip_grad.h>
 #include <torch/csrc/api/include/torch/serialize.h>
@@ -137,14 +138,15 @@ torch::Tensor GGL::PPOLearner::InferCritic(torch::Tensor obs) {
 }
 
 torch::Tensor ComputeEntropy(torch::Tensor probs, torch::Tensor actionMasks, bool maskEntropy) {
-	// Compute log probs and entropy
-	auto entropy = -(probs.log() * probs).sum(-1);
+	// Compute log probs and entropy (use clamp_min to avoid log(0) -> -inf)
+	auto logP = probs.clamp_min(1e-10f).log();
+	auto entropy = -(logP * probs).sum(-1);
 
 	if (maskEntropy) {
-		// Account for action masking in entropy
-		// We will effectively narrow the entropy to the scope of the valid actions
-		// This way states with more masked actions don't just have inherently lower entropy
-		entropy /= actionMasks.to(torch::kFloat32).sum(-1).log();
+		// Account for action masking in entropy; avoid division by zero (log(1)=0)
+		auto maskSum = actionMasks.to(torch::kFloat32).sum(-1).clamp_min(1);
+		auto denom = maskSum.log().clamp_min(1e-10f);
+		entropy = entropy / denom;
 	} else {
 		entropy /= logf(actionMasks.size(-1));
 	}
@@ -221,6 +223,10 @@ void GGL::PPOLearner::Learn(ExperienceBuffer& experience, Report& report, bool i
 					auto logits = models["policy"]->Forward(features, false) / config.policyTemperature;
 					probs = torch::softmax(logits + ACTION_DISABLED_LOGIT * actionMasksBool.logical_not(), -1)
 						.view({ -1, models["policy"]->config.numOutputs }).clamp(ACTION_MIN_PROB, 1);
+					// Sanitize so entropy/log_probs never see nan/inf (avoids NaN in report and gradients)
+					probs = torch::where(probs.isfinite(), probs, torch::full_like(probs, ACTION_MIN_PROB));
+					auto rowSum = probs.sum(-1, true).clamp_min(1e-10f);
+					probs = probs / rowSum;
 					logProbs = probs.log().gather(-1, acts.unsqueeze(-1));
 					entropy = ComputeEntropy(probs, actionMasks, config.maskEntropy);
 
@@ -336,13 +342,20 @@ void GGL::PPOLearner::Learn(ExperienceBuffer& experience, Report& report, bool i
 
 	float policyUpdateMagnitude = (policyBefore - policyAfter).norm().item<float>();
 	float criticUpdateMagnitude = (criticBefore - criticAfter).norm().item<float>();
+	if (!std::isfinite(policyUpdateMagnitude)) policyUpdateMagnitude = 0.f;
+	if (!std::isfinite(criticUpdateMagnitude)) criticUpdateMagnitude = 0.f;
 
 	if (useGpuAccum && tCount > 0) {
-		report["Policy Entropy"] = (tEntropyCount > 0) ? (tEntropySum / tEntropyCount).cpu().item<float>() : 0.f;
-		report["Mean KL Divergence"] = (tDivergenceSum / tCount).cpu().item<float>();
+		float reportEntropy = (tEntropyCount > 0) ? (tEntropySum / tEntropyCount).cpu().item<float>() : 0.f;
+		if (!std::isfinite(reportEntropy)) reportEntropy = 0.f;
+		report["Policy Entropy"] = reportEntropy;
+		float klDiv = (tDivergenceSum / tCount).cpu().item<float>();
+		report["Mean KL Divergence"] = std::isfinite(klDiv) ? klDiv : 0.f;
 		if (!isFirstIteration) {
-			report["Policy Loss"] = (tPolicyLossSum / tCount).cpu().item<float>();
-			report["Critic Loss"] = (tCriticLossSum / tCount).cpu().item<float>();
+			float plLoss = (tPolicyLossSum / tCount).cpu().item<float>();
+			float cLoss = (tCriticLossSum / tCount).cpu().item<float>();
+			report["Policy Loss"] = std::isfinite(plLoss) ? plLoss : 0.f;
+			report["Critic Loss"] = std::isfinite(cLoss) ? cLoss : 0.f;
 			if (config.useGuidingPolicy)
 				report["Guiding Loss"] = (tGuidingLossSum / tCount).cpu().item<float>();
 			report["SB3 Clip Fraction"] = (tClipSum / tCount).cpu().item<float>();
@@ -350,7 +363,9 @@ void GGL::PPOLearner::Learn(ExperienceBuffer& experience, Report& report, bool i
 			report["Critic Update Magnitude"] = criticUpdateMagnitude;
 		}
 	} else {
-		report["Policy Entropy"] = avgEntropy.Get();
+		float reportEntropy = avgEntropy.Get();
+		if (!std::isfinite(reportEntropy)) reportEntropy = 0.f;
+		report["Policy Entropy"] = reportEntropy;
 		report["Mean KL Divergence"] = avgDivergence.Get();
 		if (!isFirstIteration) {
 			report["Policy Loss"] = avgPolicyLoss.Get();
@@ -409,7 +424,8 @@ void GGL::PPOLearner::TransferLearn(
 			report["Transfer Learn Accuracy"] = matchingActionsMask.to(torch::kFloat).mean().cpu().item<float>();
 			report["Transfer Learn Loss"] = transferLearnLoss.detach().cpu().item<float>();
 
-			report["Policy Entropy"] = ComputeEntropy(newProbs, newActionMasks, config.maskEntropy).detach().cpu().item<float>();
+			float tlEntropy = ComputeEntropy(newProbs, newActionMasks, config.maskEntropy).detach().cpu().item<float>();
+			report["Policy Entropy"] = std::isfinite(tlEntropy) ? tlEntropy : 0.f;
 		}
 
 		transferLearnLoss.backward();
@@ -418,7 +434,8 @@ void GGL::PPOLearner::TransferLearn(
 	}
 
 	auto policyAfter = models["policy"]->CopyParams();
-	report["Policy Update Magnitude"] = (policyBefore - policyAfter).norm().item<float>();
+	float tlUpdateMag = (policyBefore - policyAfter).norm().item<float>();
+	report["Policy Update Magnitude"] = std::isfinite(tlUpdateMag) ? tlUpdateMag : 0.f;
 }
 
 void GGL::PPOLearner::SaveTo(std::filesystem::path folderPath) {
