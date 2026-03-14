@@ -1,3 +1,9 @@
+#if defined(_WIN32) || defined(_WIN64)
+#define NOMINMAX
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#endif
+
 #include "Learner.h"
 
 #include <GigaLearnCPP/PPO/PPOLearner.h>
@@ -7,9 +13,7 @@
 #include <nlohmann/json.hpp>
 #include <pybind11/embed.h>
 #include <filesystem>
-#if defined(_WIN32) || defined(_WIN64)
-#include <windows.h>
-#else
+#if !defined(_WIN32) && !defined(_WIN64)
 #include <unistd.h>
 #include <limits.h>
 #endif
