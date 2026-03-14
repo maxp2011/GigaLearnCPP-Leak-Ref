@@ -112,6 +112,8 @@ EnvCreateResult EnvCreateFunc(int index) {
 	{ new RLGC::AirReward(), 0.12f },
 	{ new RLGC::TouchBallReward(), 5.f },
 	{ new RLGC::VelocityPlayerToBallReward(), 5.f },
+	{ new ZeroSumReward(new RLGC::VelocityBallToGoalMouthReward(), 0.f, 0.0f), 15.f },
+	{ new RLGC::GoalReward(-0.9f), 150.f },
 
 	};
 
