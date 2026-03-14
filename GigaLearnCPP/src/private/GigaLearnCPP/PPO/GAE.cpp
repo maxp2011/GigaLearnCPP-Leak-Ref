@@ -1,4 +1,5 @@
 #include "GAE.h"
+#include <cmath>
 
 void GGL::GAE::Compute(
 	torch::Tensor rews, torch::Tensor terminals, torch::Tensor valPreds, torch::Tensor truncValPreds,
@@ -7,6 +8,10 @@ void GGL::GAE::Compute(
 ) {
 
 	bool hasTruncValPreds = truncValPreds.defined();
+
+	// Avoid NaN/Inf: division by zero or bad return stat
+	if (!std::isfinite(returnStd) || returnStd <= 0.f)
+		returnStd = 1.f;
 
 	float prevLambda = 0;
 	int numReturns = rews.size(0);
@@ -23,6 +28,12 @@ void GGL::GAE::Compute(
 	valPreds = valPreds.contiguous();
 	if (hasTruncValPreds)
 		truncValPreds = truncValPreds.contiguous();
+
+	// Sanitize inputs so we don't propagate NaN/Inf into advantages/targets
+	rews = torch::where(rews.isfinite(), rews, torch::zeros_like(rews));
+	valPreds = torch::where(valPreds.isfinite(), valPreds, torch::zeros_like(valPreds));
+	if (hasTruncValPreds)
+		truncValPreds = torch::where(truncValPreds.isfinite(), truncValPreds, torch::zeros_like(truncValPreds));
 
 	// Accessing the raw pointers makes this all like 10x faster
 	auto _terminals = terminals.const_data_ptr<int8_t>();

@@ -189,6 +189,7 @@ void GGL::PPOLearner::Learn(ExperienceBuffer& experience, Report& report, bool i
 	constexpr float ACTION_MIN_PROB = 1e-11f;
 
 	for (int epoch = 0; epoch < config.epochs; epoch++) {
+		models.ZeroGrad();
 
 		auto batches = experience.GetAllBatchesShuffled(config.batchSize, config.overbatching);
 
@@ -342,8 +343,9 @@ void GGL::PPOLearner::Learn(ExperienceBuffer& experience, Report& report, bool i
 
 	float policyUpdateMagnitude = (policyBefore - policyAfter).norm().item<float>();
 	float criticUpdateMagnitude = (criticBefore - criticAfter).norm().item<float>();
-	if (!std::isfinite(policyUpdateMagnitude)) policyUpdateMagnitude = 0.f;
-	if (!std::isfinite(criticUpdateMagnitude)) criticUpdateMagnitude = 0.f;
+	// Use -1 as sentinel when non-finite so we can tell "no update" vs "NaN/Inf"
+	if (!std::isfinite(policyUpdateMagnitude)) policyUpdateMagnitude = -1.f;
+	if (!std::isfinite(criticUpdateMagnitude)) criticUpdateMagnitude = -1.f;
 
 	if (useGpuAccum && tCount > 0) {
 		float reportEntropy = (tEntropyCount > 0) ? (tEntropySum / tEntropyCount).cpu().item<float>() : 0.f;

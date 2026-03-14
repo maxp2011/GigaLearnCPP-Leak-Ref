@@ -86,6 +86,10 @@ void GGL::Model::StepOptim() {
 	_seqHalfOutdated = true;
 }
 
+void GGL::Model::ZeroGrad() {
+	optim->zero_grad();
+}
+
 void GGL::Model::Save(std::filesystem::path folder, bool saveOptim) {
 	std::filesystem::path path = GetSavePath(folder);
 	auto streamOut = std::ofstream(path, std::ios::binary);

@@ -104,6 +104,7 @@ namespace GGL {
 		void SetOptimLR(float newLR);
 
 		void StepOptim();
+		void ZeroGrad();
 
 		std::filesystem::path GetSuffixedSavePath(std::filesystem::path folder, std::string suffix) const {
 			std::string filename = modelName + suffix ;
@@ -178,6 +179,11 @@ namespace GGL {
 			for (Model* model : *this) {
 				model->StepOptim();
 			}
+		}
+
+		void ZeroGrad() {
+			for (Model* model : *this)
+				model->ZeroGrad();
 		}
 
 		void Save(std::filesystem::path folder, bool saveOptims = true) {

@@ -12,6 +12,7 @@
 #include <torch/cuda.h>
 #include <nlohmann/json.hpp>
 #include <pybind11/embed.h>
+#include <cmath>
 #include <filesystem>
 #if !defined(_WIN32) && !defined(_WIN64)
 #include <unistd.h>
@@ -827,14 +828,17 @@ void GGL::Learner::Start() {
 
 					tEpLenSave = (tTerminals == 1).to(torch::kFloat32).mean();
 
-					// GAE
+					// GAE (guard returnStd: 0 or NaN from Welford would cause NaN advantages)
 					Timer gaeTimer = {};
+					float returnStd = returnStat ? static_cast<float>(returnStat->GetSTD()) : 1.f;
+					if (!std::isfinite(returnStd) || returnStd <= 0.f)
+						returnStd = 1.f;
 					torch::Tensor tAdvantages, tTargetVals, tReturns;
 					float rewClipPortion;
 					GAE::Compute(
 						tRewards, tTerminals, tValPreds, tTruncValPreds,
 						tAdvantages, tTargetVals, tReturns, rewClipPortion,
-						config.ppo.gaeGamma, config.ppo.gaeLambda, returnStat ? returnStat->GetSTD() : 1, config.ppo.rewardClipRange
+						config.ppo.gaeGamma, config.ppo.gaeLambda, returnStd, config.ppo.rewardClipRange
 					);
 					report["GAE Time"] = gaeTimer.Elapsed();
 					report["Clipped Reward Portion"] = rewClipPortion;
