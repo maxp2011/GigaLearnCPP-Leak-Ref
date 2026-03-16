@@ -16,6 +16,8 @@
 #include <iostream>
 #include <string>
 #include <RLGymCPP/StateSetters/KickoffState.h>
+#include <RLGymCPP/StateSetters/FuzzedKickoffState.h>
+#include <RLGymCPP/StateSetters/CombinedState.h>
 
 namespace fs = std::filesystem;
 
@@ -72,49 +74,42 @@ static std::string ParseStrArg(int argc, char* argv[], const char* flag, const c
 	return defaultValue ? std::string(defaultValue) : std::string();
 }
 
-// Create the RLGymCPP environment for each of our games
+// Create the RLGymCPP environment for each of our games (rewards/weights/hyperparams from your config)
 EnvCreateResult EnvCreateFunc(int index) {
 	std::vector<WeightedReward> rewards = {
-		// --- Ball mechanics ---
-	//	{ new ZeroSumReward(new StrongTouchReward(20, 90), 0.f, 0.7f), 5.0f },
-	//	{ new ZeroSumReward(new RLGC::VelocityBallToGoalMouthReward(), 1.f, 0.7f), 25.f },
-	//	{ new ZeroSumReward(new RLGC::VelocityPlayerToBallReward(), 1.f, 0.7f), 3.5f },
+		// --- Core objective ---
+		{ new RLGC::GoalReward(1.0f, -1.0f),                              500.0f },
+		{ new RLGC::ConcedeDistancePenalty(),                             350.0f },
+
+		// --- Ball -> goal shaping (fast play) ---
+		{ new ZeroSumReward(new RLGC::VelocityBallToGoalReward(), 0.0f, 1.0f),  16.0f },
+		{ new RLGC::VelocityPlayerToBallReward(),                              0.20f },
+
+		// --- Touch quality ---
+		{ new ZeroSumReward(new RLGC::TouchBallReward(), 0.0f, 1.0f),           1.0f },
+		{ new RLGC::TouchAccelReward(),                                         5.0f },
+		{ new RLGC::StrongTouchReward(20, 90),                                  1.0f },
+
+		// --- Aerial / advanced ---
+		{ new ZeroSumReward(new RLGC::FlyToGoalKeepHigh(), 0.0f, 0.01f),        0.2f },
+		{ new RLGC::PopResetReward(300.0f),                                    55.0f },
+
+		// --- Movement / mechanics ---
+		{ new RLGC::HyperNoStackReward(),                                      0.25f },
+
+		// --- Physical ---
+		{ new ZeroSumReward(new RLGC::BumpReward(), 0.0f, 1.0f),                1.0f },
+		{ new ZeroSumReward(new RLGC::DemoReward(), 0.0f, 1.0f),                5.0f },
+
+		// --- Boost economy ---
+		{ new ZeroSumReward(new RLGC::PickupBoostReward(), 0.0f, 1.0f),         0.5f },
+		{ new RLGC::SaveBoostReward(),                                        0.37f },
 
 		// --- Kickoff ---
-		//{ new ZeroSumReward(new RLGC::ShieldzKORew(), 1.0f, 1.0f), 5.0f },
+		{ new ZeroSumReward(new RLGC::KickoffFirstTouchReward(), 0.0f, 1.0f),  80.0f },
 
-		// --- Aerial / flip reset ---
-	//	{ new ZeroSumReward(new RLGC::FlyToGoalKeepHigh(), 1.0f, 1.0f), 0.5f },
-		//{ new ZeroSumReward(new RLGC::RipplesFlipResetFreestyleChain(), 1.f, 0.1f), 6.25f },
-		//{ new RLGC::SimpleFlipResetLearnReward(150.0f), 1.0f },
-		//{ new RLGC::PopResetReward(300.0f), 1.0f },
-
-		// --- Boost ---
-		//{ new ZeroSumReward(new RLGC::PickupBoostReward(), 0.f, 1.0f), 35.5f },
-	//	{ new RLGC::SaveBoostReward(), 1.28f },
-
-		// --- Team play ---
-	//	{ new RLGC::TeamSpacingReward_MKH(1000.0f, 1.0f), 10.0f },
-
-		// --- Demos / bumps (goal-front extracted from ConsolidatedDemoReward) ---
-		//{ new ZeroSumReward(new RLGC::RippleDemoReward(), 0.6f, 0.0f), 1300.5f },
-		//{ new ZeroSumReward(new RLGC::GoalFrontBumpDemoReward(1500.f), 1.0f, 0.0f), 1.0f },
-		//{ new RLGC::DemoBumpNearBallReward(), 50.f },
-
-		// --- Scoring ---
-	//	{ new RLGC::GoalReward(-1.f), 650.f },
-
-		// --- Misc ---
-	//	{ new RLGC::EnergyReward(), 0.00055f },
-
-
-	{ new RLGC::FaceBallReward(), 0.1f },
-	{ new RLGC::AirReward(), 0.12f },
-	{ new RLGC::TouchBallReward(), 5.f },
-	{ new RLGC::VelocityPlayerToBallReward(), 5.f },
-	{ new ZeroSumReward(new RLGC::VelocityBallToGoalMouthReward(), 0.f, 0.0f), 15.f },
-	{ new RLGC::GoalReward(-0.9f), 150.f },
-
+		// --- Regularization ---
+		{ new RLGC::EnergyReward(),                                            0.05f },
 	};
 
 	std::vector<TerminalCondition*> terminalConditions = {
@@ -122,11 +117,9 @@ EnvCreateResult EnvCreateFunc(int index) {
 		new GoalScoreCondition()
 	};
 
-	// Soccar only. 33% 1v1, 33% 2v2, 33% 3v3.
-	// 0=Soccar1v1, 1=Soccar2v2, 2=Soccar3v3
-	int combo = index % 3;
+	// 1v1 only (match your config)
+	int playersPerTeam = 1;
 	GameMode gameMode = GameMode::SOCCAR;
-	int playersPerTeam = combo + 1;
 
 	auto arena = Arena::Create(gameMode);
 	for (int i = 0; i < playersPerTeam; i++) {
@@ -136,11 +129,15 @@ EnvCreateResult EnvCreateFunc(int index) {
 
 	EnvCreateResult result = {};
 	result.actionParser = new DefaultAction();
-	result.obsBuilder = new CustomObs();  // TL from 60B (AdvancedObsPadded) onto CustomObs
-	result.stateSetter = new KickoffState();
+	result.obsBuilder = new CustomObs();  // Student uses CustomObs; TL teacher uses AdvancedObs
+	result.stateSetter = new CombinedState(
+		std::vector<std::pair<StateSetter*, float>>{
+			{ new FuzzedKickoffState(), 0.5f },
+			{ new RandomState(true, true, true), 0.5f },
+		}
+	);
 	result.terminalConditions = terminalConditions;
 	result.rewards = rewards;
-
 	result.arena = arena;
 
 	return result;
@@ -215,51 +212,37 @@ int main(int argc, char* argv[]) {
 	bool useCpu = ParseBoolArg(argc, argv, "--cpu", false);
 	cfg.deviceType = (useGpu && !useCpu) ? LearnerDeviceType::GPU_CUDA : LearnerDeviceType::CPU;
 
-	cfg.ppo.useHalfPrecision = false;  // Keep FP32; set true for faster rollout inference if desired
-
-	cfg.tickSkip = 6;
+	cfg.trainAgainstOldVersions = true;
+	cfg.trainAgainstOldChance = 0.4f;
+	cfg.tickSkip = 8;
 	cfg.actionDelay = cfg.tickSkip - 1;
 
-	cfg.numGames = 512;
+	cfg.numGames = 4096;
 	cfg.randomSeed = -1;
 
-	// Balance that gave ~18k overall before:
-	// - 196608 steps per iteration
-	// - batchSize = tsPerItr
-	// - miniBatchSize = 65536 (3 minibatches)
-	// - 1 epoch
-	int tsPerItr = 196608;  // 6 * 32768
+	cfg.ppo.useHalfPrecision = true;
+
+	int tsPerItr = 1'000'000;
 	cfg.ppo.tsPerItr = tsPerItr;
 	cfg.ppo.batchSize = tsPerItr;
-	cfg.ppo.miniBatchSize = 65536;   // Fits ~8GB VRAM
+	cfg.ppo.miniBatchSize = 25'000;
 	cfg.ppo.epochs = 1;
+	cfg.tsPerSave = 20'000'000;
 
-	// Base GGL: raw entropy -sum(p*log(p)) normalized by log(num_valid_actions) so reported entropy ~0.6.
-	const bool useZealanEntropy = true;
-	if (useZealanEntropy) {
-		cfg.ppo.entropyScale = 0.015f;
-		cfg.ppo.maskEntropy = true;   // normalize by valid action count = actual natural entropy, matches base GGL ~0.6
-	}
-	cfg.ppo.policyTemperature = 0.9f;  // slightly peakier softmax → lower natural entropy (~0.6)
-	cfg.ppo.gaeGamma = 0.998f;
+	cfg.ppo.entropyScale = 0.035f;
+	cfg.ppo.maskEntropy = true;
+	cfg.ppo.policyTemperature = 0.9f;
+	cfg.ppo.gaeGamma = 0.9955f;
 	cfg.ppo.gaeLambda = 0.958f;
 
-	cfg.ppo.policyLR = 1e-4f;
-	cfg.ppo.criticLR = 1e-4f;
+	cfg.ppo.policyLR = 12e-5f;
+	cfg.ppo.criticLR = 12e-5f;
 
-	// Set to true to use alternate entropy (mask-based normalization) instead of Zealan's.
-	bool useShitEntropy = false;
-	if (useShitEntropy) {
-		cfg.ppo.maskEntropy = true;
-	}
+	cfg.ppo.sharedHead.layerSizes = { 2048, 2048 };
+	cfg.ppo.policy.layerSizes = { 1024, 512, 512 };
+	cfg.ppo.critic.layerSizes = { 1024, 512, 512 };
 
-	cfg.ppo.sharedHead.layerSizes = { 1024, 1024, 1024, 1024, 512 };
-	cfg.ppo.policy.layerSizes = { 1024, 1024, 1024, 1024, 512 };
-	cfg.ppo.critic.layerSizes = { 1024, 1024, 1024, 1024, 512 };
-
-	//cfg.ppo.sharedHead.layerSizes = { 1024, 1024, 1024, 1024, 512 };
-//	cfg.ppo.policy.layerSizes = { 1024, 1024, 1024, 1024, 512 };
-//	cfg.ppo.critic.layerSizes = { 1024, 1024, 1024, 1024, 512 };
+	cfg.checkpointsToKeep = 4000;
 
 	auto optim = ModelOptimType::ADAM;  // rocket-learn / SB3 default
 	cfg.ppo.policy.optimType = optim;
@@ -294,14 +277,16 @@ int main(int argc, char* argv[]) {
 	cfg.renderMode = ParseBoolArg(argc, argv, "--render", false);
 	cfg.renderTimeScale = ParseFloatArg(argc, argv, "--render-timescale", 8.0f);
 
+	// TL path: --tl <path> or --transfer-learn <path>. If --tl with no path, default "kaironTL".
+	// Use a relative path (e.g. kaironTL or teachers/kaironTL) so it works on both Windows and Ubuntu
+	// when the teacher folder is in the repo. On Windows you can also pass absolute path, e.g. --tl "C:/Users/Maxph/Downloads/kaironTL".
 	std::string tlPath = ParseStrArg(argc, argv, "--tl", "");
 	if (tlPath.empty())
 		tlPath = ParseStrArg(argc, argv, "--transfer-learn", "");
 	if (tlPath.empty()) {
-		// Check if --tl/--transfer-learn flag present without path → use default (works from repo root or build/Release)
 		for (int i = 1; i < argc; i++) {
 			if (strcmp(argv[i], "--tl") == 0 || strcmp(argv[i], "--transfer-learn") == 0) {
-				tlPath = "checkpoints/685272918";
+				tlPath = "kaironTL";
 				break;
 			}
 		}
@@ -309,22 +294,20 @@ int main(int argc, char* argv[]) {
 	Learner* learner = new Learner(EnvCreateFunc, cfg, StepCallback);
 
 	if (!tlPath.empty()) {
-		// Transfer learn: teacher = checkpoint trained with CustomObs, student = current CustomObs + leaky_relu
+		// Transfer learn FROM the new model (teacher = same arch as current: AdvancedObs, 2048x2 shared, 1024/512/512, LEAKY_RELU)
 		TransferLearnConfig tlConfig = {};
-		tlConfig.makeOldObsFn = []() { return new CustomObs(); };
+		tlConfig.makeOldObsFn = []() { return new AdvancedObs(); };
 		tlConfig.makeOldActFn = []() { return new DefaultAction(); };
-		// Old model (teacher): same arch as saved checkpoint (4x1024 + 512)
-		const std::vector<int> oldLayers = { 1024, 1024, 1024, 1024, 512 };
-		tlConfig.oldSharedHeadConfig.layerSizes = oldLayers;
-		tlConfig.oldSharedHeadConfig.activationType = ModelActivationType::RELU;
+		tlConfig.oldSharedHeadConfig.layerSizes = { 2048, 2048 };
+		tlConfig.oldSharedHeadConfig.activationType = ModelActivationType::LEAKY_RELU;
 		tlConfig.oldSharedHeadConfig.addLayerNorm = true;
 		tlConfig.oldSharedHeadConfig.addOutputLayer = false;
-		tlConfig.oldPolicyConfig.layerSizes = oldLayers;
-		tlConfig.oldPolicyConfig.activationType = ModelActivationType::RELU;
+		tlConfig.oldPolicyConfig.layerSizes = { 1024, 512, 512 };
+		tlConfig.oldPolicyConfig.activationType = ModelActivationType::LEAKY_RELU;
 		tlConfig.oldPolicyConfig.addLayerNorm = true;
 		tlConfig.oldModelsPath = tlPath;
 		tlConfig.lr = 4e-4f;
-		tlConfig.batchSize = 32768;  // Lower for 8GB VRAM (teacher + student + batch); was 200000
+		tlConfig.batchSize = 32768;
 		tlConfig.epochs = 5;
 		tlConfig.useKLDiv = true;
 		tlConfig.lossScale = 500.f;

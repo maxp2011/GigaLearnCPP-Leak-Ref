@@ -60,19 +60,48 @@ namespace RLGC {
 	// NOTE: Already zero-sum
 	class GoalReward : public Reward {
 	public:
+		float scoreReward;
 		float concedeScale;
-		GoalReward(float concedeScale = -.5) : concedeScale(concedeScale) {}
+		GoalReward(float scoreReward = 1.0f, float concedeScale = -0.5f) : scoreReward(scoreReward), concedeScale(concedeScale) {}
 
 		virtual float GetReward(const Player& player, const GameState& state, bool isFinal) {
 			if (!state.goalScored)
 				return 0;
 
 			bool scored = (player.team != RS_TEAM_FROM_Y(state.ball.pos.y));
-			return scored ? 1 : concedeScale;
+			return scored ? scoreReward : concedeScale;
 		}
 	};
 
+	// Penalty when conceding: scales with distance from own goal (further = worse)
+	class ConcedeDistancePenalty : public Reward {
+	public:
+		float max_penalty = 1.0f;
+		float curvature = 2.0f;
 
+		float GetReward(const Player& player, const GameState& state, bool /*isFinal*/) override {
+			if (!state.goalScored) return 0.0f;
+
+			const bool scored_by_us = (player.team != RS_TEAM_FROM_Y(state.ball.pos.y));
+			if (scored_by_us) return 0.0f;
+
+			const Vec ownGoal = (player.team == Team::BLUE)
+				? CommonValues::BLUE_GOAL_CENTER
+				: CommonValues::ORANGE_GOAL_CENTER;
+
+			const float dx = player.pos.x - ownGoal.x;
+			const float dy = player.pos.y - ownGoal.y;
+			const float dist2D = std::sqrt(dx * dx + dy * dy);
+
+			const float field_length = 2.0f * CommonValues::BACK_WALL_Y;
+
+			float t = (field_length > 1e-6f) ? std::min(1.0f, std::max(0.0f, dist2D / field_length)) : 0.0f;
+			if (curvature > 1.0f)
+				t = std::pow(t, curvature);
+
+			return -max_penalty * t;
+		}
+	};
 
 class RippleDemoReward : public Reward {
 public:
