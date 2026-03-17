@@ -231,9 +231,7 @@ int main(int argc, char* argv[]) {
 
 	cfg.ppo.entropyScale = 0.035f;
 	cfg.ppo.maskEntropy = true;
-	cfg.ppo.policyTemperature = 0.9f;
 	cfg.ppo.gaeGamma = 0.9955f;
-	cfg.ppo.gaeLambda = 0.958f;
 
 	cfg.ppo.policyLR = 12e-5f;
 	cfg.ppo.criticLR = 12e-5f;
