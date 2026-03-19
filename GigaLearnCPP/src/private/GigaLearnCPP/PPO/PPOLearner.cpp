@@ -217,7 +217,7 @@ void GGL::PPOLearner::Learn(ExperienceBuffer& experience, Report& report, bool i
 				advantages = torch::where(advantages.isfinite(), advantages, torch::zeros_like(advantages));
 				targetValues = torch::where(targetValues.isfinite(), targetValues, torch::zeros_like(targetValues));
 
-				// Single shared_head forward per minibatch (policy + critic reuse) for faster consumption
+				// One shared_head forward per minibatch; critic and policy both use same features (no double forward)
 				torch::Tensor features = models["shared_head"] ? models["shared_head"]->Forward(obs, false) : obs;
 				auto vals = models["critic"]->Forward(features, false).flatten().view_as(targetValues);
 				vals = torch::where(vals.isfinite(), vals, torch::zeros_like(vals));
