@@ -217,16 +217,17 @@ void GGL::PPOLearner::Learn(ExperienceBuffer& experience, Report& report, bool i
 				advantages = torch::where(advantages.isfinite(), advantages, torch::zeros_like(advantages));
 				targetValues = torch::where(targetValues.isfinite(), targetValues, torch::zeros_like(targetValues));
 
-				// One shared_head forward per minibatch; critic and policy both use same features (no double forward)
-				torch::Tensor features = models["shared_head"] ? models["shared_head"]->Forward(obs, false) : obs;
-				auto vals = models["critic"]->Forward(features, false).flatten().view_as(targetValues);
+				// Two shared_head forwards (policy path + critic path), matching normal GigaLearn
+				torch::Tensor featuresPolicy = models["shared_head"] ? models["shared_head"]->Forward(obs, false) : obs;
+				torch::Tensor featuresCritic = models["shared_head"] ? models["shared_head"]->Forward(obs, false) : obs;
+				auto vals = models["critic"]->Forward(featuresCritic, false).flatten().view_as(targetValues);
 				vals = torch::where(vals.isfinite(), vals, torch::zeros_like(vals));
 
 				torch::Tensor probs, logProbs, entropy, ratio, clipped, policyLoss, ppoLoss;
 				if (trainPolicy) {
 
 					auto actionMasksBool = actionMasks.to(torch::kBool);
-					auto logits = models["policy"]->Forward(features, false) / config.policyTemperature;
+					auto logits = models["policy"]->Forward(featuresPolicy, false) / config.policyTemperature;
 					probs = torch::softmax(logits + ACTION_DISABLED_LOGIT * actionMasksBool.logical_not(), -1)
 						.view({ -1, models["policy"]->config.numOutputs }).clamp(ACTION_MIN_PROB, 1);
 					// Sanitize so entropy/log_probs never see nan/inf (avoids NaN in report and gradients)
