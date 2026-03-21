@@ -88,7 +88,12 @@ void GGL::GAE::Compute(
 			nextValPred = _truncValPreds[truncCount];
 			truncCount++;
 		} else {
-			nextValPred = _valPreds[step + 1];
+			// V(s_{t+1}): must not read past end of valPreds (last timestep has no s_{t+1} in this batch).
+			// When terminal is NORMAL, (1-done)=0 so predReturn ignores nextValPred; use 0 to avoid UB.
+			if (step + 1 < numReturns)
+				nextValPred = _valPreds[step + 1];
+			else
+				nextValPred = 0.f;
 		}
 
 		float predReturn = curReward + gamma * nextValPred * (1 - done);

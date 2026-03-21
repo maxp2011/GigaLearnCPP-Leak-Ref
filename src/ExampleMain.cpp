@@ -21,6 +21,9 @@
 
 namespace fs = std::filesystem;
 
+// Set from main() via --players-per-team (1 = 1v1, 2 = 2v2, 3 = 3v3). Must match how you run in RLBot.
+static int g_playersPerTeam = 1;
+
 // Find collision_meshes folder: try cwd, then parent dirs. Prefer absolute path so it works from build/.
 static std::string FindCollisionMeshesPath() {
 	const char* candidates[] = { "collision_meshes", "../collision_meshes", "../../collision_meshes" };
@@ -117,12 +120,10 @@ EnvCreateResult EnvCreateFunc(int index) {
 		new GoalScoreCondition()
 	};
 
-	// 1v1 only (match your config)
-	int playersPerTeam = 1;
 	GameMode gameMode = GameMode::SOCCAR;
 
 	auto arena = Arena::Create(gameMode);
-	for (int i = 0; i < playersPerTeam; i++) {
+	for (int i = 0; i < g_playersPerTeam; i++) {
 		arena->AddCar(Team::BLUE);
 		arena->AddCar(Team::ORANGE);
 	}
@@ -226,15 +227,18 @@ int main(int argc, char* argv[]) {
 	cfg.ppo.tsPerItr = tsPerItr;
 	cfg.ppo.batchSize = tsPerItr;
 	cfg.ppo.miniBatchSize = 25'000;
-	cfg.ppo.epochs = 1;
+	// Match stock GigaLearnCPP / PPOLearnerConfig + rlgym-ppo-style PPO (same as typical GGL 1v1/2v2 runs).
+	// If policy loss explodes or value diverges with this LR on your GPU, try 1.5e-4f (Zealan leak example) or 1e-4f.
+	cfg.ppo.epochs = 2;
 	cfg.tsPerSave = 20'000'000;
 
-	cfg.ppo.entropyScale = 0.035f;
-	cfg.ppo.maskEntropy = true;
-	cfg.ppo.gaeGamma = 0.9955f;
+	cfg.ppo.entropyScale = 0.018f;
+	cfg.ppo.maskEntropy = false;
+	cfg.ppo.gaeGamma = 0.99f;
+	cfg.ppo.gaeLambda = 0.95f;
 
-	cfg.ppo.policyLR = 12e-5f;
-	cfg.ppo.criticLR = 12e-5f;
+	cfg.ppo.policyLR = 3e-4f;
+	cfg.ppo.criticLR = 3e-4f;
 
 	cfg.ppo.sharedHead.layerSizes = { 2048, 2048 };
 	cfg.ppo.policy.layerSizes = { 1024, 512, 512 };
@@ -274,6 +278,15 @@ int main(int argc, char* argv[]) {
 	cfg.sendMetrics = ParseBoolArg(argc, argv, "--send-metrics", false);
 	cfg.renderMode = ParseBoolArg(argc, argv, "--render", false);
 	cfg.renderTimeScale = ParseFloatArg(argc, argv, "--render-timescale", 8.0f);
+
+	// Arena size: must match RLBot mode (1v1 / 2v2 / 3v3). Default 1. Train 2v2 with --players-per-team 2.
+	{
+		int ppt = ParseIntArg(argc, argv, "--players-per-team", 1);
+		if (ppt < 1) ppt = 1;
+		if (ppt > 3) ppt = 3;
+		g_playersPerTeam = ppt;
+		std::cerr << "Arena: " << g_playersPerTeam << " player(s) per team (" << g_playersPerTeam << "v" << g_playersPerTeam << ").\n";
+	}
 
 	// TL path: --tl <path> or --transfer-learn <path>. If --tl with no path, default "kaironTL".
 	// Use a relative path (e.g. kaironTL or teachers/kaironTL) so it works on both Windows and Ubuntu
