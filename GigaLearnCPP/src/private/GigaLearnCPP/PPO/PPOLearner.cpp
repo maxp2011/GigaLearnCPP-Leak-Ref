@@ -79,7 +79,6 @@ torch::Tensor GGL::PPOLearner::InferPolicyProbsFromModels(
 
 	actionMasks = actionMasks.to(torch::kBool);
 
-	constexpr float ACTION_MIN_PROB = 1e-11f;
 	constexpr float ACTION_DISABLED_LOGIT = -1e10f;
 
 	if (models["shared_head"])
@@ -93,11 +92,6 @@ torch::Tensor GGL::PPOLearner::InferPolicyProbsFromModels(
 	result = result.view({ -1, models["policy"]->config.numOutputs });
 	result = torch::where(result.isfinite(), result, torch::zeros_like(result));
 	auto maskF = actionMasks.to(result.scalar_type());
-	result = result * maskF;
-	result = result / result.sum(-1, true).clamp_min(1e-10f);
-	// Tiny floor on *valid* dims only (multinomial stability) without stealing mass onto invalid
-	auto floor = torch::full_like(result, ACTION_MIN_PROB) * maskF;
-	result = torch::maximum(result, floor);
 	result = result * maskF;
 	result = result / result.sum(-1, true).clamp_min(1e-10f);
 	return result;

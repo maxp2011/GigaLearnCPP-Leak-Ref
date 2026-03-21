@@ -215,7 +215,11 @@ int main(int argc, char* argv[]) {
 	bool useGpu = ParseBoolArg(argc, argv, "--gpu", false);
 	cfg.deviceType = (useCpu && !useGpu) ? LearnerDeviceType::CPU : LearnerDeviceType::GPU_CUDA;
 
-	cfg.trainAgainstOldVersions = true;
+	// Self-play vs past checkpoints: ~2x policy forward on many steps when triggered (very heavy on CPU).
+	if (ParseBoolArg(argc, argv, "--no-old-versions", false))
+		cfg.trainAgainstOldVersions = false;
+	else
+		cfg.trainAgainstOldVersions = true;
 	cfg.trainAgainstOldChance = 0.4f;
 	cfg.tickSkip = 8;
 	cfg.actionDelay = cfg.tickSkip - 1;
@@ -274,24 +278,26 @@ int main(int argc, char* argv[]) {
 	if (numGamesOverride > 0)
 		cfg.numGames = numGamesOverride;
 
+	if (cfg.deviceType == LearnerDeviceType::CPU) {
+		std::cerr
+			<< "\n*** CPU device: LibTorch on CPU is orders of magnitude slower than GPU for this model.\n"
+			<< "    CustomObs (~329 floats) also costs ~3x more matmul work in layer 1 than AdvancedObs (~109).\n"
+			<< "    Drop --cpu if CUDA LibTorch is available on this machine.\n";
+		if (cfg.numGames > 512)
+			std::cerr << "    Tip: --num-games 256 or 512 on CPU; add --no-old-versions to skip 2x inference (self-play).\n";
+		else if (cfg.trainAgainstOldVersions)
+			std::cerr << "    Tip: add --no-old-versions to disable self-play vs old policies (saves ~2x infer when active).\n";
+		std::cerr << std::endl;
+	}
+
 	// Disable metrics by default on server (avoids python_scripts / wandb issues).
 	// You can re-enable with --send-metrics true if python_scripts is set up.
 	cfg.sendMetrics = ParseBoolArg(argc, argv, "--send-metrics", false);
 	cfg.renderMode = ParseBoolArg(argc, argv, "--render", false);
 	cfg.renderTimeScale = ParseFloatArg(argc, argv, "--render-timescale", 8.0f);
 
-	// Arena size: must match RLBot mode (1v1 / 2v2 / 3v3). Default 1. Train 2v2 with --players-per-team 2.
-	{
-		int ppt = ParseIntArg(argc, argv, "--players-per-team", 1);
-		if (ppt < 1) ppt = 1;
-		if (ppt > 3) ppt = 3;
-		g_playersPerTeam = ppt;
-		std::cerr << "Arena: " << g_playersPerTeam << " player(s) per team (" << g_playersPerTeam << "v" << g_playersPerTeam << ").\n";
-	}
-
-	// TL path: --tl <path> or --transfer-learn <path>. If --tl with no path, default "kaironTL".
-	// Use a relative path (e.g. kaironTL or teachers/kaironTL) so it works on both Windows and Ubuntu
-	// when the teacher folder is in the repo. On Windows you can also pass absolute path, e.g. --tl "C:/Users/Maxph/Downloads/kaironTL".
+	// TL path (parse before arena): teacher kairon uses AdvancedObs @ 109 floats per player (1v1 only).
+	// 2v2/3v3 changes AdvancedObs length and breaks reshape in StartTransferLearn.
 	std::string tlPath = ParseStrArg(argc, argv, "--tl", "");
 	if (tlPath.empty())
 		tlPath = ParseStrArg(argc, argv, "--transfer-learn", "");
@@ -303,6 +309,21 @@ int main(int argc, char* argv[]) {
 			}
 		}
 	}
+
+	// Arena size: must match RLBot mode (1v1 / 2v2 / 3v3). Default 1.
+	{
+		int ppt = ParseIntArg(argc, argv, "--players-per-team", 1);
+		if (ppt < 1) ppt = 1;
+		if (ppt > 3) ppt = 3;
+		g_playersPerTeam = ppt;
+		if (!tlPath.empty() && g_playersPerTeam != 1) {
+			std::cerr << "Transfer learning: forcing --players-per-team 1 (teacher AdvancedObs is fixed 109-dim / 1v1).\n";
+			std::cerr << "  After TL, train 2v2 without --tl or use a 2v2 teacher with matching obs.\n";
+			g_playersPerTeam = 1;
+		}
+		std::cerr << "Arena: " << g_playersPerTeam << " player(s) per team (" << g_playersPerTeam << "v" << g_playersPerTeam << ").\n";
+	}
+
 	Learner* learner = new Learner(EnvCreateFunc, cfg, StepCallback);
 
 	if (!tlPath.empty()) {

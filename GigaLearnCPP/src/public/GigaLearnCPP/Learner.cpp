@@ -615,9 +615,9 @@ void GGL::Learner::Start() {
 					float envStepTime = 0;
 
 					for (int step = 0; combinedTraj.Length() < config.ppo.tsPerItr || render; step++, stepsCollected += numRealPlayers) {
-						// Progress logging so long first iteration doesn't look frozen
+						// Progress logging (sparse: frequent RG_LOG on SSH hurts throughput)
 						if (!render) {
-							if (step <= 5 || step % 10 == 0) {
+							if (step <= 2 || step % 100 == 0) {
 								RG_LOG("  Step " << step << " | " << combinedTraj.Length() << "/" << config.ppo.tsPerItr << " timesteps");
 							}
 						}
@@ -845,28 +845,21 @@ void GGL::Learner::Start() {
 					report["GAE Time"] = gaeTimer.Elapsed();
 					report["Clipped Reward Portion"] = rewClipPortion;
 
-					// Sanitize so Learn never sees NaN in advantages/targets
-					torch::Tensor tAdvFinite = torch::where(tAdvantages.isfinite(), tAdvantages, torch::zeros_like(tAdvantages));
-					torch::Tensor tTargetFinite = torch::where(tTargetVals.isfinite(), tTargetVals, torch::zeros_like(tTargetVals));
-
 					// Save for reporting after Learn
 					tReturnsSave = tReturns;
 					tAdvantagesSave = tAdvantages;
 					tTargetValsSave = tTargetVals;
 
-					// Experience on device (use sanitized tensors)
-					experience.data.actions = tActions.to(dev);
-					experience.data.logProbs = tLogProbs.to(dev);
-					experience.data.actionMasks = tActionMasks.to(dev);
-					experience.data.states = tStates.to(dev);
-					experience.data.advantages = tAdvFinite.to(dev);
-					experience.data.targetValues = tTargetFinite.to(dev);
+					// Keep experience on CPU like upstream; PPOLearner::Learn copies minibatches to device (better overlap / peak VRAM).
+					torch::Tensor tAdvSafe = torch::where(tAdvantages.isfinite(), tAdvantages, torch::zeros_like(tAdvantages));
+					torch::Tensor tTargetSafe = torch::where(tTargetVals.isfinite(), tTargetVals, torch::zeros_like(tTargetVals));
+					experience.data.actions = tActions;
+					experience.data.logProbs = tLogProbs;
+					experience.data.actionMasks = tActionMasks;
+					experience.data.states = tStates;
+					experience.data.advantages = tAdvSafe;
+					experience.data.targetValues = tTargetSafe;
 				}
-
-#ifdef RG_CUDA_SUPPORT
-				if (ppo->device.is_cuda())
-					c10::cuda::CUDACachingAllocator::emptyCache();
-#endif
 
 				// Learn
 				Timer learnTimer = {};
@@ -903,6 +896,12 @@ void GGL::Learner::Start() {
 				report["Total Timesteps"] = totalTimesteps;
 				totalIterations++;
 				report["Total Iterations"] = totalIterations;
+
+				// Rare emptyCache: every-iter emptyCache() syncs the GPU and kills throughput (regression vs fast runs).
+#ifdef RG_CUDA_SUPPORT
+				if (ppo->device.is_cuda() && (totalIterations % 50 == 0))
+					c10::cuda::CUDACachingAllocator::emptyCache();
+#endif
 
 				if (versionMgr)
 					versionMgr->OnIteration(ppo, report, totalTimesteps, prevTimesteps);
