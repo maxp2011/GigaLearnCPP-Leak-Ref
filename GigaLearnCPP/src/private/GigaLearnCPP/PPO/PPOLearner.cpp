@@ -87,12 +87,19 @@ torch::Tensor GGL::PPOLearner::InferPolicyProbsFromModels(
 
 	auto logits = models["policy"]->Forward(obs, halfPrec) / temperature;
 
+	// Masked softmax: invalid actions ~0. Do NOT clamp_min on every dim then renormalize globally —
+	// that puts mass on invalid actions and inflates reported entropy vs Zealan / true masked policy.
 	auto result = torch::softmax(logits + ACTION_DISABLED_LOGIT * actionMasks.logical_not(), -1);
-	result = result.view({ -1, models["policy"]->config.numOutputs }).clamp(ACTION_MIN_PROB, 1);
-	// Sanitize so multinomial never sees nan/inf/<0 (avoids CUDA device-side assert and training stop)
-	result = torch::where(result.isfinite(), result, torch::full_like(result, ACTION_MIN_PROB));
-	auto rowSum = result.sum(-1, true).clamp_min(1e-10f);
-	result = result / rowSum;
+	result = result.view({ -1, models["policy"]->config.numOutputs });
+	result = torch::where(result.isfinite(), result, torch::zeros_like(result));
+	auto maskF = actionMasks.to(result.scalar_type());
+	result = result * maskF;
+	result = result / result.sum(-1, true).clamp_min(1e-10f);
+	// Tiny floor on *valid* dims only (multinomial stability) without stealing mass onto invalid
+	auto floor = torch::full_like(result, ACTION_MIN_PROB) * maskF;
+	result = torch::maximum(result, floor);
+	result = result * maskF;
+	result = result / result.sum(-1, true).clamp_min(1e-10f);
 	return result;
 }
 
@@ -103,12 +110,7 @@ void GGL::PPOLearner::InferActionsFromModels(
 	torch::Tensor* outActions, torch::Tensor* outLogProbs) {
 
 	auto probs = InferPolicyProbsFromModels(models, obs, actionMasks, temperature, halfPrec);
-
-	// Defensive: ensure valid probs before multinomial (avoids device assert if upstream produced nan)
-	constexpr float EPS = 1e-8f;
-	probs = probs.clamp_min(EPS);
-	probs = torch::where(probs.isfinite(), probs, torch::full_like(probs, 1.0f / probs.size(-1)));
-	probs = probs / probs.sum(-1, true).clamp_min(1e-10f);
+	// InferPolicyProbs already masks + renormalizes over valid actions; do not global clamp+renorm here (inflates entropy).
 
 	if (deterministic) {
 		auto action = probs.argmax(1);
@@ -138,9 +140,9 @@ torch::Tensor GGL::PPOLearner::InferCritic(torch::Tensor obs) {
 }
 
 torch::Tensor ComputeEntropy(torch::Tensor probs, torch::Tensor actionMasks, bool maskEntropy) {
-	// Compute log probs and entropy (use clamp_min to avoid log(0) -> -inf)
-	auto logP = probs.clamp_min(1e-10f).log();
-	auto entropy = -(logP * probs).sum(-1);
+	// Shannon: -sum p log p; for p==0 the term is 0 (do not clamp_min all dims — that fakes mass on invalid actions).
+	auto plogp = torch::where(probs > 0, probs * probs.log(), torch::zeros_like(probs));
+	auto entropy = -plogp.sum(-1);
 
 	if (maskEntropy) {
 		// Account for action masking in entropy; avoid division by zero (log(1)=0)

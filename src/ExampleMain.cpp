@@ -80,39 +80,42 @@ static std::string ParseStrArg(int argc, char* argv[], const char* flag, const c
 // Create the RLGymCPP environment for each of our games (rewards/weights/hyperparams from your config)
 EnvCreateResult EnvCreateFunc(int index) {
 	std::vector<WeightedReward> rewards = {
-		// --- Core objective ---
-		{ new RLGC::GoalReward(1.0f, -1.0f),                              500.0f },
-		{ new RLGC::ConcedeDistancePenalty(),                             350.0f },
+		// ===================== CORE OBJECTIVE =====================
+		{ new RLGC::GoalReward(1.0f, -1.0f),                           500.0f },
+		{ new RLGC::ConcedeDistancePenalty(),                           350.0f },
 
-		// --- Ball -> goal shaping (fast play) ---
+		// ===================== BALL -> GOAL SHAPING (FAST PLAY) ===
 		{ new ZeroSumReward(new RLGC::VelocityBallToGoalReward(), 0.0f, 1.0f),  16.0f },
-		{ new RLGC::VelocityPlayerToBallReward(),                              0.20f },
+		{ new RLGC::VelocityPlayerToBallReward(),                       0.20f },
 
-		// --- Touch quality ---
-		{ new ZeroSumReward(new RLGC::TouchBallReward(), 0.0f, 1.0f),           1.0f },
-		{ new RLGC::TouchAccelReward(),                                         5.0f },
-		{ new RLGC::StrongTouchReward(20, 90),                                  1.0f },
+		// ===================== TOUCH QUALITY ======================
+		{ new ZeroSumReward(new RLGC::TouchBallReward(), 0.0f, 1.0f),   1.0f },
+		{ new RLGC::TouchAccelReward(),                                 5.0f },
+		{ new RLGC::StrongTouchReward(),                                1.0f },
 
-		// --- Aerial / advanced ---
-		{ new ZeroSumReward(new RLGC::FlyToGoalKeepHigh(), 0.0f, 0.01f),        0.2f },
-		{ new RLGC::PopResetReward(300.0f),                                    55.0f },
+		// ===================== AERIAL / ADVANCED ==================
+		{ new ZeroSumReward(new RLGC::FlyToGoalKeepHigh(), 0.0f, 0.01f), 0.2f },
+		{ new RLGC::FlipResetMegaRewardSimple(),                        0.01f },
+		{ new RLGC::PopResetReward(),                                   55.0f },
+		{ new RLGC::PopResetDoubleTapReward(),                          2.0f },
+		{ new RLGC::MustyFlickAfterResetGoalReward(),                   1.0f },
 
-		// --- Movement / mechanics ---
-		{ new RLGC::HyperNoStackReward(),                                      0.25f },
+		// ===================== MOVEMENT / MECHANICS (LIGHT) ========
+		{ new RLGC::HyperNoStackReward(),                               0.25f },
 
-		// --- Physical ---
-		{ new ZeroSumReward(new RLGC::BumpReward(), 0.0f, 1.0f),                1.0f },
-		{ new ZeroSumReward(new RLGC::DemoReward(), 0.0f, 1.0f),                5.0f },
+		// ===================== PHYSICAL (LOW, NON-CORE) =============
+		{ new ZeroSumReward(new RLGC::BumpReward(), 0.0f, 1.0f),        2.0f },
+		{ new ZeroSumReward(new RLGC::DemoReward(), 0.0f, 1.0f),        10.0f },
 
-		// --- Boost economy ---
-		{ new ZeroSumReward(new RLGC::PickupBoostReward(), 0.0f, 1.0f),         0.5f },
-		{ new RLGC::SaveBoostReward(),                                        0.37f },
+		// ===================== BOOST ECONOMY ========================
+		{ new ZeroSumReward(new RLGC::PickupBoostReward(), 0.0f, 1.0f), 0.5f },
+		{ new RLGC::SaveBoostReward(),                                  0.37f },
 
-		// --- Kickoff ---
-		{ new ZeroSumReward(new RLGC::KickoffFirstTouchReward(), 0.0f, 1.0f),  80.0f },
+		// ===================== KICKOFF ==============================
+		{ new ZeroSumReward(new RLGC::KickoffFirstTouchReward(), 0.0f, 1.0f), 80.0f },
 
-		// --- Regularization ---
-		{ new RLGC::EnergyReward(),                                            0.05f },
+		// ===================== REGULARIZATION =======================
+		{ new RLGC::EnergyReward(),                                     0.05f },
 	};
 
 	std::vector<TerminalCondition*> terminalConditions = {
@@ -207,11 +210,10 @@ int main(int argc, char* argv[]) {
 	else
 		cfg.checkpointFolder = checkpointPath.empty() ? "checkpoints" : checkpointPath;
 
-	// Default CPU so the app runs on all machines (e.g. RTX 50 / sm_120 not in prebuilt LibTorch yet).
-	// Use --gpu to force CUDA if your GPU is supported by this LibTorch build.
-	bool useGpu = ParseBoolArg(argc, argv, "--gpu", false);
+	// Default: GPU (training server). Use --cpu for CPU-only (e.g. unsupported GPU / RTX 50 prebuilt torch).
 	bool useCpu = ParseBoolArg(argc, argv, "--cpu", false);
-	cfg.deviceType = (useGpu && !useCpu) ? LearnerDeviceType::GPU_CUDA : LearnerDeviceType::CPU;
+	bool useGpu = ParseBoolArg(argc, argv, "--gpu", false);
+	cfg.deviceType = (useCpu && !useGpu) ? LearnerDeviceType::CPU : LearnerDeviceType::GPU_CUDA;
 
 	cfg.trainAgainstOldVersions = true;
 	cfg.trainAgainstOldChance = 0.4f;
@@ -227,18 +229,17 @@ int main(int argc, char* argv[]) {
 	cfg.ppo.tsPerItr = tsPerItr;
 	cfg.ppo.batchSize = tsPerItr;
 	cfg.ppo.miniBatchSize = 25'000;
-	// Match stock GigaLearnCPP / PPOLearnerConfig + rlgym-ppo-style PPO (same as typical GGL 1v1/2v2 runs).
-	// If policy loss explodes or value diverges with this LR on your GPU, try 1.5e-4f (Zealan leak example) or 1e-4f.
-	cfg.ppo.epochs = 2;
+	cfg.ppo.epochs = 1;
 	cfg.tsPerSave = 20'000'000;
 
-	cfg.ppo.entropyScale = 0.018f;
+	// Normalized entropy scale; gaeGamma — tune toward ~0.9966 if desired
+	cfg.ppo.entropyScale = 0.035f;
 	cfg.ppo.maskEntropy = false;
-	cfg.ppo.gaeGamma = 0.99f;
+	cfg.ppo.gaeGamma = 0.9955f;
 	cfg.ppo.gaeLambda = 0.95f;
 
-	cfg.ppo.policyLR = 3e-4f;
-	cfg.ppo.criticLR = 3e-4f;
+	cfg.ppo.policyLR = 12e-5f;
+	cfg.ppo.criticLR = 12e-5f;
 
 	cfg.ppo.sharedHead.layerSizes = { 2048, 2048 };
 	cfg.ppo.policy.layerSizes = { 1024, 512, 512 };
